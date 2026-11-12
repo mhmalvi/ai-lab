@@ -7,7 +7,7 @@ Status: the queue, budget, redaction gate, registry and MCP server are running. 
 ## What it does
 
 - **Trains transformer classifiers.** A ModernBERT-base fine-tune (PyTorch + Hugging Face Transformers `Trainer`) and few-shot SetFit / sentence-transformers classifiers, run as Kaggle kernels and locally on CPU, on a public dataset (banking77) and on redacted private email data.
-- **Serves its own email classifier in shadow mode.** An inbox classifier trained on redacted private email data is served on a loopback-only endpoint. Nothing in production calls it. On held-out items of that data it scores **85% accuracy against 42%** for a local `llama3.2:3b` baseline given the same task.
+- **Serves its own email classifier.** An inbox classifier trained on redacted private email data is served on a loopback-only endpoint. On held-out items of that data it scores **85% accuracy against 42%** for a local `llama3.2:3b` baseline given the same task, so the server's shared LLM router asks it first for three inbox-classification menus: a confident answer is used as is, and a low-confidence, timed-out or off-menu answer falls through to the router's usual model chain.
 - **Prepares LLM fine-tuning.** A QLoRA supervised fine-tuning recipe (Unsloth + TRL + PEFT LoRA adapters on a 4-bit base model, then a merged 16-bit model and a GGUF export) is ready for a Kaggle T4. First run pending.
 
 ## Architecture
@@ -35,7 +35,7 @@ flowchart LR
 
     K & L -->|"pull + evaluate"| R[("Model registry<br/>candidate / promoted")]
     R -.->|"private only"| HF["Hugging Face Hub<br/>private repos"]
-    R --> S["Shadow serving<br/>loopback endpoint"]
+    R --> S["Serving<br/>loopback endpoint"]
 ```
 
 - **Job spec** (`excerpts/jobspec.py`): a YAML file becomes a frozen, validated `JobSpec`. It fails closed on unknown keys, branch names instead of commit pins, unknown recipes, out-of-bounds or mistyped hyperparameters, and data-policy contradictions. The QLoRA recipe must state its adapter shape, sequence length and step budget.
@@ -72,14 +72,14 @@ flowchart LR
 
 ### 6. Agents get a dry-run-first interface
 **Decision.** The MCP server's read tools only read. `lab_submit` defaults to a dry run that validates and returns. Queueing requires turning dry run off, and the job then still passes the same budget gate as any other.
-**Why.** An agent can propose and check training jobs on its own, but it cannot skip validation or the budget, and nothing it does reaches production.
+**Why.** An agent can propose and check training jobs on its own, but it cannot skip validation or the budget, and it cannot deploy anything.
 
 ## Honest status
 
 - **Classifiers: ran.** ModernBERT-base and SetFit classifiers trained as Kaggle kernels and as local CPU jobs, and were evaluated into the registry.
 - **Kaggle runs so far ran on CPU.** GPU is not yet unlocked on the Kaggle account, so the provider silently runs GPU requests on CPU. The lab detects this and records the device.
 - **QLoRA SFT: built, not run.** The recipe and its validation are unit-tested (see `excerpts/tests/test_sft_recipe.py`), but no LLM has been fine-tuned with it yet. It is ready for a T4; first run pending.
-- **Shadow only.** The inbox classifier is served on loopback for comparison. It is not wired into any production path.
+- **Classification only.** The served model answers a label and a confidence on loopback; it is not a chat model, and promoting a model never deploys it — wiring one in is a separate, reviewed change.
 
 ## What's in this repo
 
